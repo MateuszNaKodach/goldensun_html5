@@ -22,6 +22,9 @@ export class Window {
         this.group.window_object = this;
         this.need_pos_update = need_pos_update;
         this.open = false;
+        this.lines_sprites = [];
+
+        this.extra_sprites = [];
     }
 
     draw_background() {
@@ -46,7 +49,7 @@ export class Window {
 
         this.graphics.lineStyle(1, 0x111111)
         this.graphics.moveTo(3, 3);
-        this.graphics.lineTo(3, this.height);
+        this.graphics.lineTo(3, this.height - 1);
 
         //right
         this.graphics.lineStyle(1, 0x525252)
@@ -84,7 +87,7 @@ export class Window {
 
         //down
         this.graphics.lineStyle(1, 0x525252)
-        this.graphics.moveTo(4, this.height);
+        this.graphics.moveTo(3, this.height);
         this.graphics.lineTo(this.width, this.height);
 
         this.graphics.lineStyle(1, 0xFFFFFF)
@@ -127,23 +130,59 @@ export class Window {
         this.graphics.lineStyle(1, 0x525252);
         this.graphics.moveTo(this.width - 1, this.height - 1);
         this.graphics.lineTo(this.width, this.height);
+
+        this.graphics.lineStyle(1, 0x111111);
+        this.graphics.moveTo(this.width - 1, 4);
+        this.graphics.lineTo(this.width, 5);
+
+        this.graphics.lineStyle(1, 0x111111);
+        this.graphics.moveTo(4, this.height - 1);
+        this.graphics.lineTo(5, this.height);
     }
 
-    show(show_callback) {
+    update_size(new_size) {
+        if (new_size.width !== undefined) {
+            this.width = new_size.width;
+        }
+        if (new_size.height !== undefined) {
+            this.height = new_size.height;
+        }
+        this.graphics.clear();
+        this.draw_background();
+        this.draw_borders();
+    }
+
+    update_position(new_position, relative = true) {
+        if (new_position.x !== undefined) {
+            this.x = new_position.x;
+        }
+        if (new_position.y !== undefined) {
+            this.y = new_position.y;
+        }
+        this.group.x = (relative ? this.game.camera.x : 0) + this.x;
+        this.group.y = (relative ? this.game.camera.y : 0) + this.y;
+    }
+
+    show(show_callback, animate = true) {
         this.group.alpha = 1;
         this.group.x = this.game.camera.x + this.x;
         this.group.y = this.game.camera.y + this.y;
-        this.transition_time = Phaser.Timer.QUARTER/4;
         this.open = true;
-        this.game.add.tween(this.group).to(
-            { width: this.graphics.width, height: this.graphics.height },
-            this.transition_time,
-            Phaser.Easing.Linear.None,
-            true
-        );
-        this.game.time.events.add(this.transition_time + 50, () => {
+        if (animate) {
+            this.transition_time = Phaser.Timer.QUARTER/4;
+            this.game.add.tween(this.group).to(
+                { width: this.graphics.width, height: this.graphics.height },
+                this.transition_time,
+                Phaser.Easing.Linear.None,
+                true
+            ).onComplete.addOnce(() => {
+                if (show_callback !== undefined) show_callback();
+            });
+        } else {
+            this.group.width = this.graphics.width;
+            this.group.height = this.graphics.height;
             if (show_callback !== undefined) show_callback();
-        });
+        }
     }
 
     update() { //updates the window position if necessary
@@ -153,39 +192,147 @@ export class Window {
         }
     }
 
-    set_text(lines) {
-        const x_pos = numbers.WINDOW_PADDING_H + 4;
-        let y_pos = numbers.WINDOW_PADDING_TOP;
+    add_sprite_to_group(sprite) {
+        this.group.add(sprite);
+    }
+
+    create_at_group(x, y, key, color) {
+        let sprite = this.group.create(x, y, key);
+        if (color !== undefined) {
+            sprite.tint = color;
+        }
+        this.extra_sprites.push(sprite);
+        return sprite;
+    }
+
+    remove_from_group(sprite, destroy = true) {
+        if (sprite !== undefined) {
+            this.group.remove(sprite, destroy);
+        } else {
+            for (let i = 0; i < this.extra_sprites.length; ++i) {
+                this.group.remove(this.extra_sprites[i], destroy);
+            }
+        }
+    }
+
+    remove_smooth(text_sprite) {
+        text_sprite.smoothed = false;
+        text_sprite.autoRound = true
+    }
+
+    set_text(lines, padding_x, padding_y, space_between_lines) {
+        for (let i = 0; i < this.lines_sprites.length; ++i) {
+            this.lines_sprites[i].text.destroy();
+            this.lines_sprites[i].shadow.destroy();
+        }
+        this.lines_sprites = [];
+        const x_pos = padding_x === undefined ? numbers.WINDOW_PADDING_H + 4 : padding_x;
+        let y_pos = padding_y === undefined ? numbers.WINDOW_PADDING_TOP : padding_y;
         for (let i = 0; i < lines.length; ++i) {
             let line = lines[i];
             let text_sprite = this.game.add.bitmapText(x_pos, y_pos, 'gs-bmp-font', line, numbers.FONT_SIZE);
             let text_sprite_shadow = this.game.add.bitmapText(x_pos+1, y_pos+1, 'gs-bmp-font', line, numbers.FONT_SIZE);
 
-            y_pos += numbers.FONT_SIZE + numbers.SPACE_BETWEEN_LINES;
+            y_pos += numbers.FONT_SIZE + (space_between_lines === undefined ? numbers.SPACE_BETWEEN_LINES : space_between_lines);
 
-            text_sprite.smoothed = false;
-            text_sprite.autoRound = true;
-            text_sprite_shadow.smoothed = false;
-            text_sprite_shadow.autoRound = true;
+            this.remove_smooth(text_sprite);
+            this.remove_smooth(text_sprite_shadow);
             text_sprite_shadow.tint = 0x0;
 
             this.group.add(text_sprite_shadow);
             this.group.add(text_sprite);
+            this.lines_sprites.push({text: text_sprite, shadow: text_sprite_shadow});
         }
     }
 
-    set_text_in_position(text, x_pos, y_pos) {
+    set_single_line_text(text, right_align = false) {
+        const x_pos = numbers.WINDOW_PADDING_H + 4;
+        let y_pos = numbers.WINDOW_PADDING_TOP;
         let text_sprite = this.game.add.bitmapText(x_pos, y_pos, 'gs-bmp-font', text, numbers.FONT_SIZE);
         let text_sprite_shadow = this.game.add.bitmapText(x_pos+1, y_pos+1, 'gs-bmp-font', text, numbers.FONT_SIZE);
+        if (right_align) {
+            text_sprite.x -= text_sprite.width;
+            text_sprite_shadow.x -= text_sprite_shadow.width;
+        }
 
-        text_sprite.smoothed = false;
-        text_sprite.autoRound = true;
-        text_sprite_shadow.smoothed = false;
-        text_sprite_shadow.autoRound = true;
+        this.remove_smooth(text_sprite);
+        this.remove_smooth(text_sprite_shadow);
         text_sprite_shadow.tint = 0x0;
 
         this.group.add(text_sprite_shadow);
         this.group.add(text_sprite);
+
+        return {text: text_sprite, shadow: text_sprite_shadow, right_align: right_align, initial_x: x_pos};
+    }
+
+    set_text_in_position(text, x_pos, y_pos, right_align = false, is_center_pos = false) {
+        let text_sprite = this.game.add.bitmapText(x_pos, y_pos, 'gs-bmp-font', text, numbers.FONT_SIZE);
+        let text_sprite_shadow = this.game.add.bitmapText(x_pos+1, y_pos+1, 'gs-bmp-font', text, numbers.FONT_SIZE);
+        if (is_center_pos) {
+            text_sprite.centerX = x_pos;
+            text_sprite.centerY = y_pos;
+            text_sprite_shadow.centerX = x_pos + 1;
+            text_sprite_shadow.centerY = y_pos + 1;
+        }
+        if (right_align) {
+            text_sprite.x -= text_sprite.width;
+            text_sprite_shadow.x -= text_sprite_shadow.width;
+        }
+
+        this.remove_smooth(text_sprite);
+        this.remove_smooth(text_sprite_shadow);
+        text_sprite_shadow.tint = 0x0;
+
+        this.group.add(text_sprite_shadow);
+        this.group.add(text_sprite);
+
+        return {text: text_sprite, shadow: text_sprite_shadow, right_align: right_align, initial_x: x_pos};
+    }
+
+    update_text(new_text, text_shadow_pair, new_x, new_y) {
+        text_shadow_pair.text.setText(new_text);
+        text_shadow_pair.shadow.setText(new_text);
+        if (new_x !== undefined) {
+            text_shadow_pair.text.x = new_x;
+            text_shadow_pair.shadow.x = new_x;
+            text_shadow_pair.initial_x = new_x;
+        }
+        if (new_y !== undefined) {
+            text_shadow_pair.text.y = new_y;
+            text_shadow_pair.shadow.y = new_y;
+        }
+        if (text_shadow_pair.right_align) {
+            text_shadow_pair.text.x = text_shadow_pair.initial_x - text_shadow_pair.text.width;
+            text_shadow_pair.shadow.x = text_shadow_pair.initial_x - text_shadow_pair.shadow.width + 1;
+        }
+    }
+
+    remove_text(text_shadow_pair) {
+        text_shadow_pair.text.destroy();
+        text_shadow_pair.shadow.destroy();
+    }
+
+    close(callback, animate = true) {
+        if (animate) {
+            this.game.add.tween(this.group).to(
+                { width: 0, height: 0 },
+                this.transition_time,
+                Phaser.Easing.Linear.None,
+                true
+            ).onComplete.addOnce(() => {
+                this.group.alpha = 0;
+                if (callback !== undefined) {
+                    callback();
+                }
+            });
+        } else {
+            this.group.alpha = 0;
+            this.group.width = 0;
+            this.group.height = 0;
+            if (callback !== undefined) {
+                callback();
+            }
+        }
     }
 
     destroy(animate, destroy_callback) {
@@ -204,7 +351,6 @@ export class Window {
         } else {
             on_destroy();
         }
-        
     }
 }
 

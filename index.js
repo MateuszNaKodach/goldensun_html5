@@ -1,30 +1,28 @@
-import * as utils from './utils.js';
 import * as numbers from './magic_numbers.js';
-import { initialize_main_chars, main_char_list, initialize_classes } from './chars/main_chars.js';
+import { initialize_main_chars, main_char_list, initialize_classes, party_data } from './chars/main_chars.js';
+import { initialize_abilities, abilities_list, initialize_field_abilities, field_abilities_list } from './chars/abilities.js';
+import { initialize_djinni, djinni_list } from './chars/djinni.js';
 import { initializeMaps, loadMaps, maps } from './maps/maps.js';
 import { jump_event, jump_near_collision } from './events/jump.js';
 import { set_door_event, door_event_phases } from './events/door.js';
-import { set_npc_event } from './events/npc.js';
+import { set_npc_event, trigger_npc_dialog } from './events/npc.js';
 import { config_step, do_step } from './events/step.js';
 import { config_collision_change, do_collision_change } from './events/collision.js';
 import * as climb from './events/climb.js';
 import * as physics from './physics/physics.js';
 import { initialize_menu } from './screens/menu.js';
-
-window.maps = maps;
-window.main_char_list = main_char_list;
+import { config_hero, change_hero_sprite, set_actual_action, update_shadow, stop_hero, init_speed_factors } from './chars/hero_control.js';
 
 var data = {
     game: undefined,
-    load_promise: undefined,
     cursors: undefined,
     hero: undefined,
     map_collider_layer: undefined,
-    actual_action: undefined,
+    actual_action: "idle",
     actual_direction: undefined,
     climb_direction: undefined,
-    x_speed: undefined,
-    y_speed: undefined,
+    x_speed: 0,
+    y_speed: 0,
     hero_name: undefined,
     map_name: undefined,
     shadow: undefined,
@@ -33,9 +31,9 @@ var data = {
     current_event: undefined,
     event_activation_process: false,
     event_timers: {},
-    on_event: undefined,
-    climbing: undefined,
-    extra_speed: undefined,
+    on_event: false,
+    climbing: false,
+    extra_speed: 0,
     map_collider: undefined,
     mapCollisionGroup: undefined,
     heroCollisionGroup: undefined,
@@ -45,18 +43,18 @@ var data = {
     underlayer_group: undefined,
     overlayer_group: undefined,
     npc_group: undefined,
-    teleporting: undefined,
-    fading_out: undefined,
-    processing_teleport: undefined,
-    delta_time: undefined,
+    teleporting: false,
+    fading_out: false,
+    processing_teleport: false,
+    delta_time: 0,
     show_fps: undefined,
     npc_db: undefined,
     psynergy_items_db: undefined,
-    npc_event: undefined,
-    active_npc: undefined,
-    waiting_for_enter_press: undefined,
-    dialog_manager: undefined,
-    in_dialog: undefined,
+    npc_event: false,
+    active_npc: null,
+    waiting_for_enter_press: false,
+    dialog_manager: null,
+    in_dialog: false,
     created: false,
     waiting_to_step: false,
     step_event_data: {},
@@ -70,8 +68,23 @@ var data = {
     pushing: false,
     walking_on_pillars_tiles: new Set(),
     dynamic_jump_events_bodies: [],
-    scale_factor: 1
+    scale_factor: 1,
+    menu_open: false,
+    esc_input: null,
+    classes_db: null,
+    abilities_db: null,
+    casting_psynergy: false,
+    hero_color_filters: undefined,
+    map_color_filters: undefined,
 };
+
+//debugging porpouses
+window.maps = maps;
+window.main_char_list = main_char_list;
+window.abilities_list = abilities_list;
+window.field_abilities_list = field_abilities_list;
+window.djinni_list = djinni_list;
+window.party_data = party_data;
 window.data = data;
 
 var game = new Phaser.Game(
@@ -86,14 +99,38 @@ var game = new Phaser.Game(
 window.game = game;
 data.game = game;
 
+function load_buttons() {
+    game.load.image('psynergy_button', 'assets/images/buttons/psynergy.gif');
+    game.load.image('djinni_button', 'assets/images/buttons/djinni.gif');
+    game.load.image('item_button', 'assets/images/buttons/item.gif');
+    game.load.image('status_button', 'assets/images/buttons/status.gif');
+
+    game.load.image('shift_keyboard', 'assets/images/keyboard/shift.png');
+    game.load.image('tab_keyboard', 'assets/images/keyboard/tab.png');
+}
+
+function load_misc() {
+    game.load.image('shadow', 'assets/images/misc/shadow.jpg');
+    game.load.image('cursor', 'assets/images/misc/cursor.gif');
+    game.load.image('green_arrow', 'assets/images/misc/green_arrow.gif');
+    game.load.image('page_arrow', 'assets/images/misc/page_arrow.png');
+    game.load.image('psynergy_aura', 'assets/images/misc/psynergy_aura.png');
+}
+
 function preload() {
     initializeMaps();
     loadMaps(game);
+    game.load.json('init_db', 'init.json');
     game.load.json('classes_db', 'assets/dbs/classes_db.json');
+    game.load.json('abilities_db', 'assets/dbs/abilities_db.json');
     game.load.json('npc_db', 'assets/dbs/npc_db.json');
     game.load.json('psynergy_items_db', 'assets/dbs/psynergy_items_db.json');
-    game.load.image('shadow', 'assets/images/misc/shadow.jpg');
+    game.load.json('djinni_db', 'assets/dbs/djinni_db.json');
+    game.load.script('color_filters', 'plugins/ColorFilters.js');
+    load_misc();
+    load_buttons();
     game.load.bitmapFont('gs-bmp-font', 'assets/font/golden-sun.png', 'assets/font/golden-sun.fnt');
+    initialize_field_abilities(game, data);
 
     game.time.advancedTiming = true;
     game.stage.smoothed = false;
@@ -111,58 +148,9 @@ function loadRender() {
     render_loading();
 }
 
-function config_hero() {
-    //creating sprites and adding hero and its shadow to npc_group
-    data.shadow = data.npc_group.create(0, 0, 'shadow');
-    data.shadow.blendMode = PIXI.blendModes.MULTIPLY;
-    data.shadow.anchor.setTo(numbers.SHADOW_X_AP, numbers.SHADOW_Y_AP); //shadow anchor point
-    data.shadow.base_collider_layer = data.map_collider_layer;
-    data.hero = data.npc_group.create(0, 0, data.hero_name + "_" + data.actual_action);
-    data.hero.centerX = numbers.HERO_START_X; //hero x start position
-    data.hero.centerY = numbers.HERO_START_Y; //hero y start position
-    data.hero.base_collider_layer = data.map_collider_layer;
-    game.camera.follow(data.hero, Phaser.Camera.FOLLOW_LOCKON, /*0.2, 0.2*/); //makes camera follow the data.hero
-    //config data.hero initial animation state
-    main_char_list[data.hero_name].setAnimation(data.hero, data.actual_action);
-    data.hero.animations.play(data.actual_action + "_" + data.actual_direction);
-}
-
 function enter_key_event() {
-    if (!data.in_dialog) {
-        for (let i = 0; i < maps[data.map_name].npcs.length; ++i) {
-            let npc = maps[data.map_name].npcs[i];
-            let is_close = utils.is_close(
-                data.actual_direction,
-                data.hero.x,
-                data.hero.y,
-                npc.npc_sprite.x,
-                npc.npc_sprite.y,
-                numbers.NPC_TALK_RANGE
-            );
-            if (is_close) {
-                data.actual_action = "idle";
-                change_hero_sprite();
-                data.npc_event = true;
-                data.active_npc = npc;
-                break;
-            }
-        }
-    } else if (data.in_dialog && data.waiting_for_enter_press) {
-        data.waiting_for_enter_press = false;
-        data.dialog_manager.next(() => {
-            if (data.dialog_manager.finished) {
-                data.in_dialog = false;
-                data.dialog_manager = null;
-                data.npc_event = false;
-                data.active_npc.npc_sprite.animations.play([
-                    data.npc_db[data.active_npc.key_name].initial_action,
-                    data.npc_db[data.active_npc.key_name].actions[data.npc_db[data.active_npc.key_name].initial_action].initial_direction
-                ].join("_"));
-            } else {
-                data.waiting_for_enter_press = true;
-            }
-        });
-    }
+    if (data.casting_psynergy) return;
+    trigger_npc_dialog(data);
 }
 
 function toggle_debug() {
@@ -179,48 +167,43 @@ function toggle_debug() {
     data.debug = !data.debug;
 }
 
-function toggle_grid() {
-    data.grid = !data.grid;
-}
-
 async function create() {
-    // Initializing some vars
-    data.hero_name = "isaac";
-    data.map_name = "madra";
-    data.map_collider_layer = 0;
-    data.actual_action = 'idle';
-    data.actual_direction = 'down';
-    data.extra_speed = 0;
-    data.delta_time = 0;
-    data.x_speed = 0;
-    data.y_speed = 0;
-    data.on_event = false;
-    data.climbing = false;
-    data.teleporting = false;
-    data.fading_out = false;
-    data.processing_teleport = false;
-    data.npc_event = false;
-    data.active_npc = null;
-    data.waiting_for_enter_press = false;
-    data.dialog_manager = null;
-    data.in_dialog = false;
+    // initializing some vars
+    data.init_db = game.cache.getJSON('init_db'); 
     data.npc_db = game.cache.getJSON('npc_db');
     data.psynergy_items_db = game.cache.getJSON('psynergy_items_db');
     data.classes_db = game.cache.getJSON('classes_db');
+    data.abilities_db = game.cache.getJSON('abilities_db');
+    data.djinni_db = game.cache.getJSON('djinni_db');
+    data.hero_color_filters = game.add.filter('ColorFilters');
+    data.map_color_filters = game.add.filter('ColorFilters');
+
+    data.hero_name = data.init_db.hero_key_name;
+    data.actual_direction = data.init_db.initial_direction;
+    data.map_name = data.init_db.map_key_name;
+    data.map_collider_layer = data.init_db.map_z_index;
+    party_data.coins = data.init_db.coins;
 
     initialize_classes(data.classes_db);
+    initialize_djinni(data.djinni_db);
 
-    let load_promise_resolve;
-    data.load_promise = new Promise(resolve => {
-        load_promise_resolve = resolve;
+    let load_abilities_promise_resolve;
+    let load_abilities_promise = new Promise(resolve => {
+        load_abilities_promise_resolve = resolve;
+    });
+    initialize_abilities(game, data.abilities_db, load_abilities_promise_resolve);
+    await load_abilities_promise;
+
+    let load_chars_promise_resolve;
+    let load_chars_promise = new Promise(resolve => {
+        load_chars_promise_resolve = resolve;
     });
     game.load.json('main_chars_db', 'assets/dbs/main_chars.json').onLoadComplete.addOnce(() => {
         data.main_chars_db = game.cache.getJSON('main_chars_db');
-        initialize_main_chars(game, data.main_chars_db, load_promise_resolve);
+        initialize_main_chars(game, data.main_chars_db, load_chars_promise_resolve);
     });
     game.load.start();
-
-    await data.load_promise;
+    await load_chars_promise;
 
     //creating groups. Order here is important
     data.underlayer_group = game.add.group();
@@ -228,9 +211,24 @@ async function create() {
     data.overlayer_group = game.add.group();
 
     //initialize screens
-    data.menu_screen = initialize_menu();
+    data.menu_screen = initialize_menu(data);
     game.input.keyboard.addKey(Phaser.Keyboard.SPACEBAR).onDown.add(() => {
-        data.menu_screen.open_menu();
+        if (data.casting_psynergy) return;
+        if (!data.menu_open) {
+            data.menu_open = true;
+            stop_hero(data);
+            update_shadow(data);
+            data.menu_screen.open_menu();
+        } else if (data.menu_screen.is_active()) {
+            data.menu_open = false;
+            data.menu_screen.close_menu();
+        }
+    }, this);
+    data.esc_input = game.input.keyboard.addKey(Phaser.Keyboard.ESC).onDown.add(() => {
+        if (data.menu_open) {
+            data.menu_open = false;
+            data.menu_screen.close_menu();
+        }
     }, this);
 
     //configuring map layers: creating sprites, listing events and setting the layers
@@ -246,7 +244,7 @@ async function create() {
         data.map_collider_layer,
         data.npc_group
     ).then(() => {
-        config_hero();
+        config_hero(data);
         physics.config_world_physics();
         physics.config_physics_for_hero(data);
         physics.config_physics_for_npcs(data);
@@ -260,12 +258,14 @@ async function create() {
         game.input.keyboard.addKey(Phaser.Keyboard.D).onDown.add(toggle_debug, this);
         
         //activate grid mode
-        game.input.keyboard.addKey(Phaser.Keyboard.G).onDown.add(toggle_grid, this);
+        game.input.keyboard.addKey(Phaser.Keyboard.G).onDown.add(() => {
+            data.grid = !data.grid;
+        }, this);
 
         //enable full screen
         game.scale.fullScreenScaleMode = Phaser.ScaleManager.SHOW_ALL;
         game.input.onTap.add(function(pointer, isDoubleClick) {  
-            if(isDoubleClick) {
+            if (isDoubleClick) {
                 game.scale.startFullScreen(true);
             }  
         });
@@ -284,35 +284,27 @@ async function create() {
         }, this);
         game.input.keyboard.addKey(Phaser.Keyboard.TWO).onDown.add(function(){
             data.scale_factor = 2;
-            game.scale.setupScale(2*numbers.GAME_WIDTH, 2*numbers.GAME_HEIGHT);
+            game.scale.setupScale(data.scale_factor * numbers.GAME_WIDTH, data.scale_factor * numbers.GAME_HEIGHT);
             window.dispatchEvent(new Event('resize'));
         }, this);
         game.input.keyboard.addKey(Phaser.Keyboard.THREE).onDown.add(function(){
             data.scale_factor = 3;
-            game.scale.setupScale(3*numbers.GAME_WIDTH, 3*numbers.GAME_HEIGHT);
+            game.scale.setupScale(data.scale_factor * numbers.GAME_WIDTH, data.scale_factor * numbers.GAME_HEIGHT);
             window.dispatchEvent(new Event('resize'));
         }, this);
 
+        //enable psynergies shortcuts
+        game.input.keyboard.addKey(Phaser.Keyboard.Q).onDown.add(function(){
+            field_abilities_list.move.cast(data.hero_name);
+        }, this);
+
         //enable enter event
-        game.input.keyboard.addKey(Phaser.Keyboard.ENTER).onDown.add(enter_key_event, this);
+        data.enter_input = game.input.keyboard.addKey(Phaser.Keyboard.ENTER).onDown.add(enter_key_event, this);
 
         //set keyboard cursors
         data.cursors = game.input.keyboard.createCursorKeys();
 
-        //set initial speed factors
-        if (data.actual_direction === "up") {
-            data.x_speed = 0;
-            data.y_speed = -1;
-        } else if (data.actual_direction === "down") {
-            data.x_speed = 0;
-            data.y_speed = 1;
-        } else if (data.actual_direction === "left") {
-            data.x_speed = -1;
-            data.y_speed = 0;
-        } else if (data.actual_direction === "right") {
-            data.x_speed = 1;
-            data.y_speed = 0;
-        }
+        init_speed_factors(data);
 
         data.created = true;
         game.camera.resetFX();
@@ -386,7 +378,7 @@ function event_triggering() {
 
 function update() {
     if (data.created) {
-        if (!data.on_event && !data.npc_event && !data.pushing) {
+        if (!data.on_event && !data.npc_event && !data.pushing && !data.menu_open && !data.casting_psynergy) {
             data.hero_tile_pos_x = parseInt(data.hero.x/maps[data.map_name].sprite.tileWidth);
             data.hero_tile_pos_y = parseInt(data.hero.y/maps[data.map_name].sprite.tileHeight);
 
@@ -405,15 +397,13 @@ function update() {
             }
 
             physics.set_speed_factors(data);
-            set_actual_action(); //chooses which sprite the hero shall assume
+            set_actual_action(data); //chooses which sprite the hero shall assume
             data.delta_time = game.time.elapsedMS/numbers.DELTA_TIME_FACTOR;
             physics.calculate_hero_speed(data);
-            change_hero_sprite();
+            change_hero_sprite(data);
             physics.collision_dealer(data);
 
-            //makes the shadow follow the hero
-            data.shadow.x = data.hero.x;
-            data.shadow.y = data.hero.y;
+            update_shadow(data);
 
             data.map_collider.body.velocity.y = data.map_collider.body.velocity.x = 0; //fixes map body
 
@@ -442,7 +432,7 @@ function update() {
             //disabling hero body movement
             data.hero.body.velocity.y = data.hero.body.velocity.x = 0;
         } else if (data.pushing) {
-            change_hero_sprite();
+            change_hero_sprite(data);
         }
     } else {
         render_loading();
@@ -480,35 +470,6 @@ function render() {
             game.debug.text(`x: ${mouse_x}, y: ${mouse_y}`, 140, 15, "#00ff00");
         } else {
             game.debug.text(`x: --, y: --`, 140, 15, "#00ff00");
-        }
-    }
-}
-
-function change_hero_sprite() {
-    const key = data.hero_name + "_" + data.actual_action;
-    const animation = data.actual_action + "_" + data.actual_direction;
-    if (data.hero.key !== key) {
-        data.hero.loadTexture(key);
-        main_char_list[data.hero_name].setAnimation(data.hero, data.actual_action);
-        data.hero.animations.play(animation);
-    }
-    if (data.hero.animations.currentAnim.name !== animation) {
-        data.hero.animations.play(animation);
-    }
-}
-
-function set_actual_action() {
-    if (!data.cursors.up.isDown && !data.cursors.left.isDown && !data.cursors.right.isDown && !data.cursors.down.isDown && data.actual_action !== "idle" && !data.climbing)
-        data.actual_action = "idle";
-    else if (!data.cursors.up.isDown && !data.cursors.left.isDown && !data.cursors.right.isDown && !data.cursors.down.isDown && data.actual_direction !== "idle" && data.climbing)
-        data.actual_direction = "idle";
-    else if ((data.cursors.up.isDown || data.cursors.left.isDown || data.cursors.right.isDown || data.cursors.down.isDown) && data.actual_direction !== "climb" && data.climbing)
-        data.actual_direction = "climb";
-    else if ((data.cursors.up.isDown || data.cursors.left.isDown || data.cursors.right.isDown || data.cursors.down.isDown) && (data.actual_action !== "walk" || data.actual_action !== "dash") && !data.climbing) {
-        if (game.input.keyboard.isDown(Phaser.Keyboard.SHIFT) && data.actual_action !== "dash") {
-            data.actual_action = "dash";
-        } else if (!game.input.keyboard.isDown(Phaser.Keyboard.SHIFT) && data.actual_action !== "walk") {
-            data.actual_action = "walk";
         }
     }
 }
